@@ -64,6 +64,17 @@ There are two ways you can install imgproxy:
   # It's recommended to use PPA with an up to date version.
   $ sudo add-apt-repository ppa:dhor/myway
   $ sudo apt-get install libvips-dev
+  
+  # Windows
+  # Download libvips(v8.6.4) : https://jcupitt.github.io/libvips/
+  # Download pkg-config(v0.26) : https://sourceforge.net/projects/mingw-w64/files/Toolchains%20targetting%20Win64/Personal%20Builds/ray_linn/64bit-libraries/pkg-config/
+  # Download golang(v.1.6.2) : https://golang.org/doc/install
+  # Download mingw-w64(x86_64, win32) : http://mingw-w64.org/doku.php/download
+  # **Windows Environment Variables**
+  # PKG_CONFIG_PATH=~\vips-dev-8.6\lib\pkgconfig;~\vips-dev-8.6\share\pkgconfig;
+  # GOPATH=~\Users\User\go
+  # GOROOT=~\go
+  # PAHT=~\vips-dev-8.6\bin;~\pkg-config\bin;~\go\bin;~\mingw64\bin
   ```
 
   **Note:** Most libvips packages come with WebP support. If you want libvips to support WebP on macOS, you need to install it this way:
