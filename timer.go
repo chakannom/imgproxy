@@ -1,32 +1,39 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"time"
 )
 
-type timer struct {
-	StartTime time.Time
-	Timer     <-chan time.Time
+var timerSinceCtxKey = ctxKey("timerSince")
+
+func startTimer(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(
+		context.WithValue(ctx, timerSinceCtxKey, time.Now()),
+		d,
+	)
 }
 
-func startTimer(dt time.Duration, info string) *timer {
-	return &timer{time.Now(), time.After(dt)}
+func getTimerSince(ctx context.Context) time.Duration {
+	return time.Since(ctx.Value(timerSinceCtxKey).(time.Time))
 }
 
-func (t *timer) Check() {
+func checkTimeout(ctx context.Context) {
 	select {
-	case <-t.Timer:
-		panic(t.TimeoutErr())
+	case <-ctx.Done():
+		d := getTimerSince(ctx)
+
+		if newRelicEnabled {
+			sendTimeoutToNewRelic(ctx, d)
+		}
+
+		if prometheusEnabled {
+			incrementPrometheusErrorsTotal("timeout")
+		}
+
+		panic(newError(503, fmt.Sprintf("Timeout after %v", d), "Timeout"))
 	default:
 		// Go ahead
 	}
-}
-
-func (t *timer) TimeoutErr() imgproxyError {
-	return newError(503, fmt.Sprintf("Timeout after %v", t.Since()), "Timeout")
-}
-
-func (t *timer) Since() time.Duration {
-	return time.Since(t.StartTime)
 }

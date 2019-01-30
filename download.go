@@ -1,123 +1,206 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
-	"errors"
+	"context"
+	"crypto/tls"
 	"fmt"
 	"image"
 	"io"
 	"io/ioutil"
+	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
 
-	_ "golang.org/x/image/webp"
+	_ "github.com/mat/besticon/ico"
 )
 
-var downloadClient *http.Client
+var (
+	downloadClient  *http.Client
+	imageTypeCtxKey = ctxKey("imageType")
+	imageDataCtxKey = ctxKey("imageData")
 
-type netReader struct {
-	reader *bufio.Reader
-	buf    *bytes.Buffer
+	errSourceDimensionsTooBig      = newError(422, "Source image dimensions are too big", "Invalid source image")
+	errSourceResolutionTooBig      = newError(422, "Source image resolution is too big", "Invalid source image")
+	errSourceFileTooBig            = newError(422, "Source image file is too big", "Invalid source image")
+	errSourceImageTypeNotSupported = newError(422, "Source image type not supported", "Invalid source image")
+)
+
+const msgSourceImageIsUnreachable = "Source image is unreachable"
+
+var downloadBufPool *bufPool
+
+type limitReader struct {
+	r    io.ReadCloser
+	left int
 }
 
-func newNetReader(r io.Reader) *netReader {
-	return &netReader{
-		reader: bufio.NewReader(r),
-		buf:    bytes.NewBuffer([]byte{}),
-	}
-}
+func (lr *limitReader) Read(p []byte) (n int, err error) {
+	n, err = lr.r.Read(p)
+	lr.left = lr.left - n
 
-func (r *netReader) Read(p []byte) (n int, err error) {
-	n, err = r.reader.Read(p)
-	if err == nil {
-		r.buf.Write(p[:n])
+	if err == nil && lr.left < 0 {
+		err = errSourceFileTooBig
 	}
+
 	return
 }
 
-func (r *netReader) Peek(n int) ([]byte, error) {
-	return r.reader.Peek(n)
-}
-
-func (r *netReader) ReadAll() ([]byte, error) {
-	if _, err := r.buf.ReadFrom(r.reader); err != nil {
-		return []byte{}, err
-	}
-	return r.buf.Bytes(), nil
-}
-
-func (r *netReader) GrowBuf(s int) {
-	r.buf.Grow(s)
+func (lr *limitReader) Close() error {
+	return lr.r.Close()
 }
 
 func initDownloading() {
 	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy:               http.ProxyFromEnvironment,
+		MaxIdleConns:        conf.Concurrency,
+		MaxIdleConnsPerHost: conf.Concurrency,
+		DisableCompression:  true,
+		Dial:                (&net.Dialer{KeepAlive: 600 * time.Second}).Dial,
 	}
+
+	if conf.IgnoreSslVerification {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+
 	if conf.LocalFileSystemRoot != "" {
 		transport.RegisterProtocol("local", http.NewFileTransport(http.Dir(conf.LocalFileSystemRoot)))
 	}
+
+	if conf.S3Enabled {
+		transport.RegisterProtocol("s3", newS3Transport())
+	}
+
+	if len(conf.GCSKey) > 0 {
+		transport.RegisterProtocol("gs", newGCSTransport())
+	}
+
 	downloadClient = &http.Client{
 		Timeout:   time.Duration(conf.DownloadTimeout) * time.Second,
 		Transport: transport,
 	}
+
+	downloadBufPool = newBufPool("download", conf.Concurrency, conf.DownloadBufferSize)
+}
+
+func checkDimensions(width, height int) error {
+	if conf.MaxSrcDimension > 0 && (width > conf.MaxSrcDimension || height > conf.MaxSrcDimension) {
+		return errSourceDimensionsTooBig
+	}
+
+	if width*height > conf.MaxSrcResolution {
+		return errSourceResolutionTooBig
+	}
+
+	return nil
 }
 
 func checkTypeAndDimensions(r io.Reader) (imageType, error) {
 	imgconf, imgtypeStr, err := image.DecodeConfig(r)
-	imgtype, imgtypeOk := imageTypes[imgtypeStr]
-
+	if err == image.ErrFormat {
+		return imageTypeUnknown, errSourceImageTypeNotSupported
+	}
 	if err != nil {
-		return UNKNOWN, err
+		return imageTypeUnknown, err
 	}
-	if imgconf.Width > conf.MaxSrcDimension || imgconf.Height > conf.MaxSrcDimension {
-		return UNKNOWN, errors.New("Source image is too big")
-	}
-	if imgconf.Width*imgconf.Height > conf.MaxSrcResolution {
-		return UNKNOWN, errors.New("Source image is too big")
-	}
+
+	imgtype, imgtypeOk := imageTypes[imgtypeStr]
 	if !imgtypeOk || !vipsTypeSupportLoad[imgtype] {
-		return UNKNOWN, errors.New("Source image type not supported")
+		return imageTypeUnknown, errSourceImageTypeNotSupported
+	}
+
+	if err = checkDimensions(imgconf.Width, imgconf.Height); err != nil {
+		return imageTypeUnknown, err
 	}
 
 	return imgtype, nil
 }
 
-func readAndCheckImage(res *http.Response) ([]byte, imageType, error) {
-	nr := newNetReader(res.Body)
-
-	imgtype, err := checkTypeAndDimensions(nr)
-	if err != nil {
-		return nil, UNKNOWN, err
+func readAndCheckImage(ctx context.Context, res *http.Response) (context.Context, context.CancelFunc, error) {
+	buf := downloadBufPool.get()
+	cancel := func() {
+		downloadBufPool.put(buf)
 	}
+
+	body := res.Body
+
+	if conf.MaxSrcFileSize > 0 {
+		body = &limitReader{r: body, left: conf.MaxSrcFileSize}
+	}
+
+	imgtype, err := checkTypeAndDimensions(io.TeeReader(body, buf))
+	if err != nil {
+		return ctx, cancel, err
+	}
+
+	var contentLength int
 
 	if res.ContentLength > 0 {
-		nr.GrowBuf(int(res.ContentLength))
+		contentLength = int(res.ContentLength)
+	} else {
+		// ContentLength wasn't set properly, trying to parse the header
+		contentLength, _ = strconv.Atoi(res.Header.Get("Content-Length"))
 	}
 
-	b, err := nr.ReadAll()
+	if contentLength > buf.Cap() {
+		buf.Grow(contentLength - buf.Len())
+	}
 
-	return b, imgtype, err
+	if _, err = buf.ReadFrom(body); err != nil {
+		return ctx, cancel, newError(404, err.Error(), msgSourceImageIsUnreachable)
+	}
+
+	ctx = context.WithValue(ctx, imageTypeCtxKey, imgtype)
+	ctx = context.WithValue(ctx, imageDataCtxKey, buf)
+
+	return ctx, cancel, nil
 }
 
-func downloadImage(url string) ([]byte, imageType, error) {
-	fullURL := fmt.Sprintf("%s%s", conf.BaseURL, url)
+func downloadImage(ctx context.Context) (context.Context, context.CancelFunc, error) {
+	url := getImageURL(ctx)
 
-	res, err := downloadClient.Get(fullURL)
-	if err != nil {
-		return nil, UNKNOWN, err
+	if newRelicEnabled {
+		newRelicCancel := startNewRelicSegment(ctx, "Downloading image")
+		defer newRelicCancel()
 	}
-	defer res.Body.Close()
+
+	if prometheusEnabled {
+		defer startPrometheusDuration(prometheusDownloadDuration)()
+	}
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return ctx, func() {}, newError(404, err.Error(), msgSourceImageIsUnreachable)
+	}
+
+	req.Header.Set("User-Agent", conf.UserAgent)
+
+	res, err := downloadClient.Do(req)
+	if res != nil {
+		defer res.Body.Close()
+	}
+	if err != nil {
+		return ctx, func() {}, newError(404, err.Error(), msgSourceImageIsUnreachable)
+	}
 
 	if res.StatusCode != 200 {
 		body, _ := ioutil.ReadAll(res.Body)
-		return nil, UNKNOWN, fmt.Errorf("Can't download image; Status: %d; %s", res.StatusCode, string(body))
+		msg := fmt.Sprintf("Can't download image; Status: %d; %s", res.StatusCode, string(body))
+		return ctx, func() {}, newError(404, msg, msgSourceImageIsUnreachable)
 	}
 
-	return readAndCheckImage(res)
+	return readAndCheckImage(ctx, res)
+}
+
+func getImageType(ctx context.Context) imageType {
+	return ctx.Value(imageTypeCtxKey).(imageType)
+}
+
+func getImageData(ctx context.Context) *bytes.Buffer {
+	return ctx.Value(imageDataCtxKey).(*bytes.Buffer)
 }

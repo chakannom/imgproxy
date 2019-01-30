@@ -3,7 +3,9 @@
 <img align="right" width="200" height="200" title="imgproxy logo"
      src="https://cdn.rawgit.com/DarthSim/imgproxy/master/logo.svg">
 
-[![Build Status](https://api.travis-ci.org/DarthSim/imgproxy.svg?branch=master)](https://travis-ci.org/DarthSim/imgproxy)
+
+[![CircleCI branch](https://img.shields.io/circleci/project/github/DarthSim/imgproxy/master.svg?style=for-the-badge)](https://circleci.com/gh/DarthSim/imgproxy) [![Docker](https://img.shields.io/badge/docker-darthsim%2Fimgproxy-blue.svg?style=for-the-badge)](https://hub.docker.com/r/darthsim/imgproxy/) [![MicroBadger Size](https://img.shields.io/microbadger/image-size/darthsim/imgproxy.svg?style=for-the-badge)](https://hub.docker.com/r/darthsim/imgproxy/) [![Docker Pulls](https://img.shields.io/docker/pulls/darthsim/imgproxy.svg?style=for-the-badge)](https://hub.docker.com/r/darthsim/imgproxy/)
+
 
 imgproxy is a fast and secure standalone server for resizing and converting remote images. The main principles of imgproxy are simplicity, speed, and security.
 
@@ -46,215 +48,54 @@ Massive processing of remote images is a potentially dangerous thing, security-w
 
 * imgproxy supports authorization by an HTTP header. That prevents using imgproxy directly by an attacker but allows to use it through a CDN or a caching server — just by adding a header to a proxy or CDN config.
 
-## Installation
-
-There are two ways you can install imgproxy:
-
-#### From the source
-
-1. First, install [libvips](https://github.com/jcupitt/libvips).
-
-  ```bash
-  # macOS
-  $ brew tap homebrew/science
-  $ brew install vips
-
-  # Ubuntu
-  # Ubuntu apt repository contains a pretty old version of libvips.
-  # It's recommended to use PPA with an up to date version.
-  $ sudo add-apt-repository ppa:dhor/myway
-  $ sudo apt-get install libvips-dev
-  
-  # Windows
-  # Download libvips(v8.6.4) : https://jcupitt.github.io/libvips/
-  # Download pkg-config(v0.26) : https://sourceforge.net/projects/mingw-w64/files/Toolchains%20targetting%20Win64/Personal%20Builds/ray_linn/64bit-libraries/pkg-config/
-  # Download golang(v.1.6.2) : https://golang.org/doc/install
-  # Download mingw-w64(x86_64, win32) : http://mingw-w64.org/doku.php/download
-  # **Windows Environment Variables**
-  # PKG_CONFIG_PATH=~\vips-dev-8.6\lib\pkgconfig;~\vips-dev-8.6\share\pkgconfig;
-  # GOPATH=~\Users\User\go
-  # GOROOT=~\go
-  # PAHT=~\vips-dev-8.6\bin;~\pkg-config\bin;~\go\bin;~\mingw64\bin
-  ```
-
-  **Note:** Most libvips packages come with WebP support. If you want libvips to support WebP on macOS, you need to install it this way:
-
-  ```bash
-  $ brew tap homebrew/science
-  $ brew install vips --with-webp
-  ```
-
-2. Next, install imgproxy itself:
-
-  ```bash
-  $ go get -f -u github.com/DarthSim/imgproxy
-  ```
-
-#### Docker
-
-imgproxy can (and should) be used as a standalone application inside a Docker container. It is ready to be dockerized, plug and play:
-
-```bash
-$ docker build -t imgproxy .
-$ docker run -e IMGPROXY_KEY=$YOUR_KEY -e IMGPROXY_SALT=$YOUR_SALT -p 8080:8080 -t imgproxy
-```
-
-You can also pull the image from Docker Hub:
-
-```bash
-$ docker pull darthsim/imgproxy:latest
-$ docker run -e IMGPROXY_KEY=$YOUR_KEY -e IMGPROXY_SALT=$YOUR_SALT -p 8080:8080 -t darthsim/imgproxy
-```
-
-#### Heroku
-
-imgproxy can be deployed to Heroku with the click of the button:
-
-[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy)
-
-However, you can do it manually with a few steps:
-
-```bash
-$ git clone https://github.com/DarthSim/imgproxy.git && cd imgproxy
-$ heroku create your-application
-$ heroku buildpacks:add https://github.com/heroku/heroku-buildpack-apt
-$ heroku buildpacks:add https://github.com/heroku/heroku-buildpack-go
-$ heroku config:set IMGPROXY_KEY=$YOUR_KEY IMGPROXY_SALT=$YOUR_SALT
-$ git push heroku master
-```
-
-## Configuration
-
-imgproxy is [Twelve-Factor-App](https://12factor.net/)-ready and can be configured using `ENV` variables.
-
-#### URL signature
-
-imgproxy requires all URLs to be signed with a key and salt:
-
-* `IMGPROXY_KEY` — (**required**) hex-encoded key;
-* `IMGPROXY_SALT` — (**required**) hex-encoded salt;
-
-You can also specify paths to files with a hex-encoded key and salt (useful in a development environment):
-
-```bash
-$ imgproxy -keypath /path/to/file/with/key -saltpath /path/to/file/with/salt
-```
-
-If you need a random key/salt pair real fast, you can quickly generate it using, for example, the following snippet:
-
-```bash
-$ xxd -g 2 -l 64 -p /dev/random | tr -d '\n'
-```
-
-#### Server
-
-* `IMGPROXY_BIND` — TCP address to listen on. Default: `:8080`;
-* `IMGPROXY_READ_TIMEOUT` — the maximum duration (in seconds) for reading the entire image request, including the body. Default: `10`;
-* `IMGPROXY_WRITE_TIMEOUT` — the maximum duration (in seconds) for writing the response. Default: `10`;
-* `IMGPROXY_DOWNLOAD_TIMEOUT` — the maximum duration (in seconds) for downloading the source image. Default: `5`;
-* `IMGPROXY_CONCURRENCY` — the maximum number of image requests to be processed simultaneously. Default: double number of CPU cores;
-* `IMGPROXY_MAX_CLIENTS` — the maximum number of simultaneous active connections. Default: `IMGPROXY_CONCURRENCY * 10`;
-* `IMGPROXY_TTL` — duration in seconds sent in `Expires` and `Cache-Control: max-age` headers. Default: `3600` (1 hour);
-* `IMGPROXY_USE_ETAG` — when true, enables using [ETag](https://en.wikipedia.org/wiki/HTTP_ETag) header for the cache control. Default: false;
-* `IMGPROXY_LOCAL_FILESYSTEM_ROOT` — root of the local filesystem. See [Serving local files](#serving-local-files). Keep empty to disable serving of local files.
-
-#### Security
-
-imgproxy protects you from so-called image bombs. Here is how you can specify maximum image dimensions and resolution which you consider reasonable:
-
-* `IMGPROXY_ALLOW_ORIGIN` - when set, enables CORS headers with provided origin. CORS headers are disabled by default.
-* `IMGPROXY_MAX_SRC_DIMENSION` — the maximum dimensions of the source image, in pixels, for both width and height. Images with larger real size will be rejected. Default: `8192`;
-* `IMGPROXY_MAX_SRC_RESOLUTION` — the maximum resolution of the source image, in megapixels. Images with larger real size will be rejected. Default: `16.8`;
-
-You can also specify a secret to enable authorization with the HTTP `Authorization` header:
-
-* `IMGPROXY_SECRET` — the authorization token. If specified, request should contain the `Authorization: Bearer %secret%` header;
-
-#### Compression
-
-* `IMGPROXY_QUALITY` — quality of the resulting image, percentage. Default: `80`;
-* `IMGPROXY_GZIP_COMPRESSION` — GZip compression level. Default: `5`;
-* `IMGPROXY_JPEG_PROGRESSIVE` — when true, enables progressive compression of JPEG. Default: false;
-* `IMGPROXY_PNG_INTERLACED` — when true, enables interlaced compression of PNG. Default: false;
-
-#### Miscellaneous
-
-* `IMGPROXY_BASE_URL` - base URL part which will be added to every requestsd image URL. For example, if base URL is `http://example.com/images` and `/path/to/image.png` is requested, imgproxy will download the image from `http://example.com/images/path/to/image.png`. Default: blank.
-
-## Generating the URL
-
-The URL should contain the signature and resize parameters, like this:
-
-```
-/%signature/%resizing_type/%width/%height/%gravity/%enlarge/%encoded_url.%extension
-```
-
-#### Resizing types
-
-imgproxy supports the following resizing types:
-
-* `fit` — resizes the image while keeping aspect ratio to fit given size;
-* `fill` — resizes the image while keeping aspect ratio to fill given size and cropping projecting parts;
-* `crop` — crops the image to a given size.
-
-#### Width and height
-
-Width and height parameters define the size of the resulting image. Depending on the resizing type applied, the dimensions may differ from the requested ones.
-
-#### Gravity
-
-When imgproxy needs to cut some parts of the image, it is guided by the gravity. The following values are supported:
-
-* `no` — north (top edge);
-* `so` — south (bottom edge);
-* `ea` — east (right edge);
-* `we` — west (left edge);
-* `ce` — center;
-* `sm` — smart. `libvips` detects the most "interesting" section of the image and considers it as the center of the resulting image.
-
-#### Enlarge
-
-If set to `0`, imgproxy will not enlarge the image if it is smaller than the given size. With any other value, imgproxy will enlarge the image.
-
-#### Encoded URL
-
-The source URL should be encoded with URL-safe Base64. The encoded URL can be split with `/` for your needs.
-
-#### Extension
-
-Extension specifies the format of the resulting image. At the moment, imgproxy supports only `jpg`, `png` and `webp`, them being the most popular and useful web image formats.
-
-#### Signature
-
-Signature is a URL-safe Base64-encoded HMAC digest of the rest of the path including the leading `/`. Here's how it is calculated:
-
-* Take the path after the signature — `/%resizing_type/%width/%height/%gravity/%enlarge/%encoded_url.%extension`;
-* Add salt to the beginning;
-* Calculate the HMAC digest using SHA256;
-* Encode the result with URL-safe Base64.
-
-You can find helpful code snippets in the `examples` folder.
-
-## Serving local files
-
-imgproxy can process files from your local filesystem. To use this feature do the following:
-
-1. Set `IMGPROXY_LOCAL_FILESYSTEM_ROOT` to your images directory path.
-2. Use `local:///path/to/image.jpg` as the source image url.
-
-## Source image formats support
-
-imgproxy supports only the most popular image formats of the moment: PNG, JPEG, GIF and WebP.
-
-## Deployment
-
-There is a special endpoint `/health`, which returns HTTP Status `200 OK` after server successfully starts. This can be used to check container readiness.
+## Documentation
+
+1. [Getting started](./docs/GETTING_STARTED.md)
+2. [Installation](./docs/installation.md)
+   * [Docker](./docs/installation.md#docker)
+   * [Heroku](./docs/installation.md#heroku)
+   * [From the source](./docs/installation.md#from-the-source)
+3. [Configuration](./docs/configuration.md)
+   * [URL signature](./docs/configuration.md#url-signature)
+   * [Server](./docs/configuration.md#server)
+   * [Security](./docs/configuration.md#security)
+   * [Compression](./docs/configuration.md#compression)
+   * [WebP support detection](./docs/configuration.md#webp-support-detection)
+   * [Client Hints support](./docs/configuration.md#client-hints-support)
+   * [Watermark](./docs/configuration.md#watermark)
+   * [Presets](./docs/configuration.md#presets)
+   * [Serving local files](./docs/configuration.md#serving-local-files)
+   * [Serving files from Amazon S3](./docs/configuration.md#serving-files-from-amazon-s3)
+   * [Serving files from Google Cloud Storage](./docs/configuration.md#serving-files-from-google-cloud-storage)
+   * [New Relic metrics](./docs/configuration.md#new-relic-metrics)
+   * [Prometheus metrics](./docs/configuration.md#prometheus-metrics)
+   * [Error reporting](./docs/configuration.md#error-reporting)
+   * [Syslog](./docs/configuration.md#syslog)
+   * [Memory usage tweaks](./docs/configuration.md#memory-usage-tweaks)
+   * [Miscellaneous](./docs/configuration.md#miscellaneous)
+4. [Generating the URL](./docs/generating_the_url_basic.md)
+   * [Basic](./docs/generating_the_url_basic.md)
+   * [Advanced](./docs/generating_the_url_advanced.md)
+   * [Signing the URL](./docs/signing_the_url.md)
+5. [Watermark](./docs/watermark.md)
+6. [Presets](./docs/presets.md)
+7. [Serving local files](./docs/serving_local_files.md)
+8. [Serving files from Amazon S3](./docs/serving_files_from_s3.md)
+9. [Serving files from Google Cloud Storage](./docs/serving_files_from_google_cloud_storage.md)
+10. [New Relic](./docs/new_relic.md)
+11. [Prometheus](./docs/prometheus.md)
+12. [Image formats support](./docs/image_formats_support.md)
+13. [About processing pipeline](./docs/about_processing_pipeline.md)
+14. [Health check](./docs/healthcheck.md)
+15. [Memory usage tweaks](./docs/memory_usage_tweaks.md)
 
 ## Author
 
-Sergey "DarthSim" Aleksandrovich
+Sergey "DarthSim" Alexandrovich
 
-Many thanks to @romashamin for the awesome logo.
+Many thanks to [Roman Shamin](https://github.com/romashamin) for the awesome logo.
+
+Great bunch of kudos goes to [John Cupitt](https://github.com/jcupitt) who develops [libvips](https://github.com/libvips/libvips) and helps me to optimize its usage under the hood of imgproxy.
 
 ## License
 

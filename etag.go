@@ -1,20 +1,44 @@
 package main
 
 import (
-	"crypto/sha1"
-	"encoding/binary"
-	"fmt"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"hash"
+	"sync"
 )
 
-var notModifiedErr = newError(304, "Not modified", "Not modified")
+type eTagCalc struct {
+	hash hash.Hash
+	enc  *json.Encoder
+}
 
-func calcETag(b []byte, po *processingOptions) string {
-	footprint := sha1.Sum(b)
+var eTagCalcPool = sync.Pool{
+	New: func() interface{} {
+		h := sha256.New()
 
-	hash := sha1.New()
-	hash.Write(footprint[:])
-	binary.Write(hash, binary.LittleEndian, *po)
-	hash.Write(conf.ETagSignature)
+		enc := json.NewEncoder(h)
+		enc.SetEscapeHTML(false)
+		enc.SetIndent("", "")
 
-	return fmt.Sprintf("%x", hash.Sum(nil))
+		return &eTagCalc{h, enc}
+	},
+}
+
+func calcETag(ctx context.Context) string {
+	c := eTagCalcPool.Get().(*eTagCalc)
+	defer eTagCalcPool.Put(c)
+
+	c.hash.Reset()
+	c.hash.Write(getImageData(ctx).Bytes())
+	footprint := c.hash.Sum(nil)
+
+	c.hash.Reset()
+	c.hash.Write(footprint)
+	c.hash.Write([]byte(version))
+	c.enc.Encode(conf)
+	c.enc.Encode(getProcessingOptions(ctx))
+
+	return hex.EncodeToString(c.hash.Sum(nil))
 }

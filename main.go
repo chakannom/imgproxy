@@ -1,46 +1,48 @@
 package main
 
 import (
-	"log"
-	"net"
-	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"runtime/debug"
 	"time"
 
-	"golang.org/x/net/netutil"
+	"net/http"
+	_ "net/http/pprof"
 )
 
+const version = "2.2.1"
+
+type ctxKey string
+
 func main() {
-	// Force garbage collection
 	go func() {
-		for _ = range time.Tick(10 * time.Second) {
+		var logMemStats = len(os.Getenv("IMGPROXY_LOG_MEM_STATS")) > 0
+
+		for range time.Tick(time.Duration(conf.FreeMemoryInterval) * time.Second) {
 			debug.FreeOSMemory()
+
+			if logMemStats {
+				var m runtime.MemStats
+				runtime.ReadMemStats(&m)
+				logNotice("[MEMORY USAGE] Sys: %d; HeapIdle: %d; HeapInuse: %d", m.Sys/1024/1024, m.HeapIdle/1024/1024, m.HeapInuse/1024/1024)
+			}
 		}
 	}()
 
-	l, err := net.Listen("tcp", conf.Bind)
-	if err != nil {
-		log.Fatal(err)
+	if len(os.Getenv("IMGPROXY_PPROF_BIND")) > 0 {
+		go func() {
+			http.ListenAndServe(os.Getenv("IMGPROXY_PPROF_BIND"), nil)
+		}()
 	}
 
-	s := &http.Server{
-		Handler:        newHTTPHandler(),
-		ReadTimeout:    time.Duration(conf.ReadTimeout) * time.Second,
-		MaxHeaderBytes: 1 << 20,
-	}
+	s := startServer()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, os.Kill)
 
-	go func() {
-		log.Printf("Starting server at %s\n", conf.Bind)
-		log.Fatal(s.Serve(netutil.LimitListener(l, conf.MaxClients)))
-	}()
-
 	<-stop
 
-	shutdownVips()
 	shutdownServer(s)
+	shutdownVips()
 }
